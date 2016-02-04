@@ -3,72 +3,97 @@ load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/gsn_code.ncl"
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/gsn_csm.ncl"
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/contributed.ncl"  
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/shea_util.ncl"  
+load "$NCARG_ROOT/lib/ncarg/nclscripts/esmf/ESMF_regridding.ncl"  
 
 begin
 in = addfile("data_obs.nc","r")
+t = in->t
+T = t(:1462,:,{-90.:90.},{0.:360.})
+delete(t)
+u = in->u
+U = u(:1462,:,{-90.:90.},{0.:360.})
+delete(u)
 
-T = in->t(:,:,{-90.:90.},{0.:360.})
-U = in->u(:,:,{-90.:90.},{0.:360.})
-
-lon = in->longitude({0:360})
+loni = in->longitude({0:360})
 lati = in->latitude({-90.:90.})
 T_file = addfile("../DART/hpss_files/Temp.nc","r")
-newlat = T_file->lat
+newlat = T_file->lat(50:140)
 newlon = T_file->lon
 
-obsT = linint2_Wrap(lon,lati,T,True,newlon,newlat,0)
-obsU = linint2_Wrap(lon,lati,U,True,newlon,newlat,0)
+wgt_file = "ECMWF_to_DART.nc"
 
+Opt = True
+;Opt@InterpMethod = "patch"
+;Opt@WgtFileName = wgt_file
 
-ensemble_meanT = T_file->T(:,0,:,:,(/13,18,28/))
-ensemble_memberT = T_file->T(:,2:,:,:,(/13,18,28/))
+;Opt@SrcGridLat = lati
+;Opt@SrcGridLon = loni
+;Opt@SrcInputFileName = in
+
+;Opt@DstGridLat = newlat
+Opt@DstGridLon = newlon
+
+;Opt@ForceOverwrite = True
+;Opt@Debug = True
+;Opt@PrintTimings = True
+
+obsT = ESMF_regrid_with_weights(T,wgt_file,1)
+printVarSummary(obsT)
+
+obsU = ESMF_regrid_with_weights(U,wgt_file,1)
+printVarSummary(obsU)
+
+ensemble_T = T_file->T
+printVarSummary(ensemble_T)
+ensemble_meanT = ensemble_T(time|:,copy|0,lev|(/13,18,28/),lat|50:140,lon|:)
+ensemble_memberT = ensemble_T(copy|2:31,time|:,lev|(/13,18,28/),lat|50:140,lon|:)
+delete(ensemble_T)
+
+printVarSummary(ensemble_meanT)
+printVarSummary(ensemble_memberT)
+
 U_file = addfile("../DART/hpss_files/US.nc","r")
-ensemble_meanU = U_file->US(:,0,:,:,(/13,18,28/))
-ensemble_memberU = U_file->US(:,2:,:,:,(/13,18,28/))
+ensemble_U = U_file->US
+printVarSummary(ensemble_U)
+
+ensemble_meanU = ensemble_U(time|:,copy|0,lev|(/13,18,28/),slat|50:140,lon|:)
+ensemble_memberU = ensemble_U(copy|2:31,time|:,lev|(/13,18,28/),slat|50:140,lon|:)
+delete(ensemble_U)
+
+printVarSummary(ensemble_meanU)
+printVarSummary(ensemble_memberU)
+
 n_ensemble = 30;
 n_t = 1463
 n_lon = 288
 n_lat = 191
 n_lev = 3
 
-Depar =new((/n_lev,n_lat,n_lon/),"float",0);
-Bias =new((/n_lev,n_lat,n_lon/),"float",0);
-EnsVar =new((/n_lev,n_lat,n_lon/),"float",0);
 
-DeparU =new((/n_lev,n_lat,n_lon/),"float",0);
-BiasU =new((/n_lev,n_lat,n_lon/),"float",0);
-EnsVarU =new((/n_lev,n_lat,n_lon/),"float",0);
-Error_ResidU =new((/n_lev,n_lat,n_lon/),"float",0);
+Depar = dim_sum_n((ensemble_meanT - obsT)^2,0)/(n_t-1);
+printVarSummary(Depar)
 
-do ez = 0,n_lev
-	do ey = 0,n_lat
-		do ex = 0,n_lon
-			do j = 0,n_t
-				Depar(ez,ey,ex) = Depar(ez,ey,ex)+ (ensemble_meanT(j,ey,ex,ez)-obsT(j,ez,ey,ex))^2;
-				Bias(ez,ey,ex) = Bias(ez,ey,ex) + ensemble_meanT(j,ey,ex,ez)-obsT(j,ez,ey,ex);
-				DeparU(ez,ey,ex) = DeparU(ez,ey,ex)+ (ensemble_meanU(j,ey,ex,ez)-obsU(j,ez,ey,ex))^2;
-				BiasU(ez,ey,ex) = BiasU(ez,ey,ex) + ensemble_meanU(j,ey,ex,ez)-obsU(j,ez,ey,ex);
-				do i = 0,n_ensemble
-					EnsVar(ez,ey,ex) = EnsVar(ez,ey,ex) + (ensemble_memberT(j,i,ey,ex,ez) - ensemble_meanT(j,ey,ex,ez))^2;
-					EnsVarU(ez,ey,ex) = EnsVarU(ez,ey,ex) + (ensemble_memberU(j,i,ey,ex,ez) - ensemble_meanU(j,ey,ex,ez))^2;
-				end do
-		
-			end do
-			Depar(ez,ey,ex) = Depar(ez,ey,ex)/(n_t-1)
-			Bias(ez,ey,ex) = Bias(ez,ey,ex)^2/(n_t^2-n_t)
-			EnsVar(ez,ey,ex) = EnsVar(ez,ey,ex)*(n_ensemble+1)/(n_ensemble*nt*(n_ensemble-1))
-			DeparU(ez,ey,ex) = DeparU(ez,ey,ex)/(n_t-1)
-			BiasU(ez,ey,ex) = BiasU(ez,ey,ex)^2/(n_t^2-n_t)
-			EnsVarU(ez,ey,ex) = EnsVarU(ez,ey,ex)*(n_ensemble+1)/(n_ensemble*nt*(n_ensemble-1))
-		end do
-	end do
-end do
+Bias = dim_sum_n(ensemble_meanT-obsT,0)^2 /(n_t^2-n_t)
+printVarSummary(Bias)
+
+DeparU = dim_sum_n((ensemble_meanU-obsU)^2,0)/(n_t-1);
+printVarSummary(DeparU)
+
+BiasU = dim_sum_n(ensemble_meanT-obsT,0)^2/(n_t^2-n_t);
+printVarSummary(BiasU)
+
+EnsVar = dim_sum_n(dim_sum_n((ensemble_memberT - conform(ensemble_memberT,ensemble_meanT,(/1,2,3,4/)))^2,0),0)*(n_ensemble+1)/(n_ensemble*n_t*(n_ensemble-1))
+printVarSummary(EnsVar)
+
+EnsVarU = dim_sum_n(dim_sum_n((ensemble_memberU - conform(ensemble_memberU,ensemble_meanU,(/1,2,3,4/)))^2,0),0)*(n_ensemble+1)/(n_ensemble*n_t*(n_ensemble-1))
+printVarSummary(EnsVarU)
+
 Error_Resid = Depar - Bias - EnsVar
 Error_ResidU = DeparU - BiasU - EnsVarU
-
+printVarSummary(Error_ResidU)
  
 plot = new(4,"graphic")
-wks = gsn_open_wks("ps","Tropopause_Temp")
+wks = gsn_open_wks("ps","Tropopause_Temp_")
 gsn_define_colormap(wks,"amwg")
  res                       = True
   res@gsnMaximize           = True
@@ -111,7 +136,7 @@ gsn_panel(wks,plot,(/4,1/),resP)
 
 delete(plot)
 plot = new(4,"graphic")
-wks1 = gsn_open_wks("ps","Mid_Trop_Temp")
+wks1 = gsn_open_wks("ps","Mid_Trop_Temp_")
 gsn_define_colormap(wks1,"amwg")
 
   res@gsnLeftString         = "Departure"
@@ -127,7 +152,7 @@ gsn_panel(wks1,plot,(/4,1/),resP)
 
 delete(plot)
 plot = new(4,"graphic")
-wks2 = gsn_open_wks("ps","Lower_Trop_Temp")
+wks2 = gsn_open_wks("ps","Lower_Trop_Temp_")
 gsn_define_colormap(wks2,"amwg")
 
   res@gsnLeftString         = "Departure"
@@ -143,7 +168,7 @@ gsn_panel(wks2,plot,(/4,1/),resP)
 
 delete(plot)
 plot = new(4,"graphic")
-wks3 = gsn_open_wks("ps","Tropopause_U")
+wks3 = gsn_open_wks("ps","Tropopause_U_")
 gsn_define_colormap(wks3,"amwg")
 
   res@gsnLeftString         = "Departure"
@@ -159,7 +184,7 @@ gsn_panel(wks3,plot,(/4,1/),resP)
 
 delete(plot)
 plot = new(4,"graphic")
-wks4 = gsn_open_wks("ps","Mid_Trop_U")
+wks4 = gsn_open_wks("ps","Mid_Trop_U_")
 gsn_define_colormap(wks4,"amwg")
 
   res@gsnLeftString         = "Departure"
@@ -176,7 +201,7 @@ gsn_panel(wks4,plot,(/4,1/),resP)
 
 delete(plot)
 plot = new(4,"graphic")
-wks5 = gsn_open_wks("ps","Lower_Trop_U")
+wks5 = gsn_open_wks("ps","Lower_Trop_U_")
 gsn_define_colormap(wks5,"amwg")
 
   res@gsnLeftString         = "Departure"
@@ -190,5 +215,28 @@ gsn_define_colormap(wks5,"amwg")
 
 resP@txString = "Lower Troposphere Zonal Wind"
 gsn_panel(wks5,plot,(/4,1/),resP)
+
+ncdf = addfile("Reliability.nc","c")
+fAtt = True
+fAtt@title = "Reliability Budget"
+fAtt@source_file = "../DART/hpss_files/Temp.nc"
+fAtt@Conventions = "None"
+fAtt@creation_date = systemfunc("date")
+fileattdef(ncdf,fAtt)
+
+ filedimdef(ncdf,"time",-1,True) 
+
+    ;===================================================================
+    ; output variables directly; NCL will call appropriate functions
+    ; to write the meta data associated with each variable
+    ;===================================================================
+       ncdf->T_Depar  = Depar                          ; 4D               
+       ncdf->T_Bias = Bias
+       ncdf->T_EnsVar = EnsVar
+       ncdf->T_Error_Resid = Error_Resid
+       ncdf->U_Depar = DeparU
+       ncdf->U_Bias = BiasU
+       ncdf->U_EnsVar = EnsVarU
+       ncdf->U_Error_Resid = Error_ResidU
 
 end
